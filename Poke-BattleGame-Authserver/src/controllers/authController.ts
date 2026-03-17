@@ -85,7 +85,7 @@ export const login: RequestHandler = async (req, res, next) => {
             throw new Error('User not found', { cause: e_notFound });
         }
 
-        // compare the provided password with the stored hash
+        // compare the provided pass with the stored hash
         const match = await bcrypt.compare(password, user.password);
 
         if (!match) {
@@ -110,7 +110,7 @@ export const login: RequestHandler = async (req, res, next) => {
         res.json({ message: 'User logged in successfully' });
 
         // what do we do with them cookie?
-        // send it to the middleware that checks for it and verifies it on protected routes
+        // send it to the middleware that verifies it on protected routes
 
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
