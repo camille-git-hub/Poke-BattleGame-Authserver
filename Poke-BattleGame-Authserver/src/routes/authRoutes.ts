@@ -1,18 +1,17 @@
 import { Router } from 'express';
+export const authRouter = Router();
 
 // keeps endpint logic seperate from route destinations
-import { register, login, refresh, logout } from '../controllers';
+import { register, login, refresh, logout } from '../controllers/index.ts';
 
-const authRouter = Router();
-
-authRouter.post('/register', register); // passing the (req, res)
+// each endpoint has its own RequestHandler (req, res, next)
+authRouter.post('/register', register);
 authRouter.post('/login', login);
 authRouter.post('/refresh', refresh);
 authRouter.post('/logout', logout);
 
-// authRouter.post('/profile', authenticateToken, profile);
-// authRouter.get('/protected', authenticateToken, (req, res) => {
-//     res.json({ message: 'This is a protected route' });
-// });
+// protected routes
+import { authenticate } from '../middleware/authenticate.ts';
+import { profile } from '../controllers/index.ts';
 
-export default authRouter;
+authRouter.post('/profile', authenticate, profile);

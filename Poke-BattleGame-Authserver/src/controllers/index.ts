@@ -4,4 +4,4 @@
 // instead of
 // import { register, login, refresh, logout } from './controllers/authController';
 
-export * from './authController';
+export * from './authController.ts';
