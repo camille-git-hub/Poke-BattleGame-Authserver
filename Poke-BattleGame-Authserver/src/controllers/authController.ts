@@ -4,20 +4,20 @@ import { type RequestHandler } from 'express';
 import { StatusCodes } from 'http-status-codes';
 
 import { User } from '../models/index.ts';
+import { RefreshToken } from '../models/index.ts';
+
+// services
+import { setAuthCookies, clearAuthCookies } from '../services/cookieService.ts';
+import { signAccessToken, rotateRefreshToken, clearRefreshToken } from '../services/tokenService.ts';
 
 // temp
 import bcrypt from 'bcrypt';
-
-// signing the token
-import jwt from 'jsonwebtoken';
+import type { Types } from 'mongoose';
 
 // errors
 const e_notFound = { status: StatusCodes.NOT_FOUND }
 const e_unauthorized = { status: StatusCodes.UNAUTHORIZED }
 const e_alreadyExists = { status: StatusCodes.CONFLICT }
-
-// toking
-const JWT_SECRET: string = process.env.JWT_SECRET || 'undefined_secret';
 
 export const register: RequestHandler = async (req, res, next) => {
     try {
@@ -42,26 +42,15 @@ export const register: RequestHandler = async (req, res, next) => {
         const payload = { email: newUser.email, id: newUser._id };
         // In production, use a secure secret and store it in environment variables
 
-        const secret: string = process.env.JWT_SECRET || 'undefined_secret';
+        const accessToken = await signAccessToken(payload);
+        const refreshToken = await rotateRefreshToken(newUser._id);
 
-        const token = jwt.sign(payload, secret, { expiresIn: '1h' }); // token expires in 1 hour
-
-        // Set the access token as an HTTP-only cookie
-        // An access token is a credential that proves the user is authenticated.
-        // It's sent with each subsequent request to authorize protected endpoints.
-        // Storing it in a cookie (rather than localStorage) protects against XSS attacks
-        // because JavaScript cannot access httpOnly cookies.
-        res.cookie("accessToken", token, {
-            httpOnly: true, // prevents JavaScript access to the cookie, mitigating XSS attacks
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict', // prevents the browser from sending this cookie along with cross-site requests
-            // maxAge: '1h', // cookie expires in 1 hour
-        });
+        setAuthCookies(res, accessToken, refreshToken);
 
         // Send ONE response with success
         res.status(StatusCodes.CREATED).json({
             message: 'User registered successfully',
-            token,
+            accessToken,
             user: { id: newUser._id, email: newUser.email }
         });
 
@@ -97,40 +86,63 @@ export const login: RequestHandler = async (req, res, next) => {
             id: user._id
         };
 
-        const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
-        const maxAge = 60 * 60 * 1000; // 1 hour in milliseconds
+        const accessToken = await signAccessToken(payload);
+        const refreshToken = await rotateRefreshToken(user._id);
 
-        // Set the access token as an HTTP-only cookie
-        res.cookie("accessToken", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            maxAge: maxAge, // cookie expires in 1 hour
-        });
+        setAuthCookies(res, accessToken, refreshToken);
 
         // Send ONE response with success
         res.status(200).json({
             message: 'User logged in successfully',
-            token,
+            accessToken,
             user: { id: user._id, email: user.email }
         });
 
         // what do we do with them cookie?
         // send it to the middleware that verifies it on protected routes
 
-
+        /// ...
 
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     } finally {
         console.log("RequestHandler: login completed");
     }
-}
+} 
+
+const e_refreshTokenError = new Error('Refresh token missing', { cause: e_unauthorized });
+const e_storedTokenError = new Error('Invalid refresh token', { cause: e_unauthorized });
 
 export const refresh: RequestHandler = async (req, res, next) => {
-    // token refresh logic here
     try {
-        res.json({ message: 'Token refreshed successfully' });
+
+        const { refreshToken } = req.cookies;
+        if (!refreshToken) { throw e_refreshTokenError };
+
+        const storedToken = await RefreshToken
+            .findOne({ token: refreshToken })
+            .populate('userId'); // gets user
+
+        if (!storedToken) { throw e_storedTokenError };
+
+        const user = await User.findById(storedToken.userId);
+        if (!user) { throw e_notFound }
+
+        await storedToken.deleteOne();
+        // === await RefreshToken.findByIdAndDelete(storedToken._id);
+
+        
+        const payload = { email: user.email, id: user._id };
+        const accessToken = await signAccessToken(payload);
+
+        const userId = storedToken.userId as Types.ObjectId;
+        const newRefershToken = await rotateRefreshToken(userId);
+
+        // In production, use a secure secret and store it in environment variables
+
+        setAuthCookies(res, accessToken, newRefershToken);
+        res.status(201).json(storedToken);
+
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     } finally {
@@ -140,19 +152,19 @@ export const refresh: RequestHandler = async (req, res, next) => {
 
 export const logout: RequestHandler = async (req, res, next) => {
     try {
-        res.clearCookie("accessToken");
+        await clearRefreshToken(req.cookies.refreshToken);
+        await clearAuthCookies(res);
         res.end();
     } catch (error) {
         next(error);
     } finally {
-        console.log("RequestHandler: logout completed");
+        console.log("Logged out!");
     }
 };
 
 export const profile: RequestHandler = async (req, res, next) => {
     try {
-        const userId: string | undefined = req.user?.id;
-        const user = await User.findById(userId);
+        const user = await User.findById(req.user?.id);
         res.json(user);
 
     } catch (error) {

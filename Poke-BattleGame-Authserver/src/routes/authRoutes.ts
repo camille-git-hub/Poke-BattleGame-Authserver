@@ -14,4 +14,4 @@ authRouter.post('/logout', logout);
 import { authenticate } from '../middleware/authenticate.ts';
 import { profile } from '../controllers/index.ts';
 
-authRouter.post('/profile', authenticate, profile);
+authRouter.get('/profile', authenticate, profile);

@@ -7,7 +7,7 @@ import cookieParser from 'cookie-parser';
 app.use(cookieParser()); // Middleware to parse cookies from incoming requests
 
 // connect to the database (runs the code in db/index.ts, which connects to MongoDB)
-import "./db/index.ts"; // this code just runs
+import { connectDB } from "./db/index.ts";
 
 // CORS (Cross-Origin Resource Sharing) is Express middleware that controls
 // which browser origins are allowed to call this API.
@@ -28,7 +28,7 @@ const port = process.env.PORT ?? 3000;
 
 // app.use("/docs", express.static("docs"));
 
-app.use((req, res, next) => {
+app.use((req, _res, next) => {
     console.log(`${req.method} ${req.url} ${new Date()}`);
     next();
 });
@@ -38,6 +38,11 @@ app.use((req, res, next) => {
 //     credentials: true, // allow cookies to be sent
 // }));
 
-app.listen(port, () => {
-    console.log(`App running on http://localhost:${port}`);
-});
+// Start server after DB connection
+(async () => {
+    await connectDB();
+    
+    app.listen(port, () => {
+        console.log(`App running on http://localhost:${port}`);
+    });
+})();
