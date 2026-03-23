@@ -4,12 +4,15 @@ import { type RequestHandler } from 'express';
 import { StatusCodes } from 'http-status-codes';
 
 import { User } from '../models/index.ts';
+import { RefreshToken } from '../models/index.ts';
+
+// services
+import { setAuthCookies, clearAuthCookies } from '../services/cookieService.ts';
+import { signAccessToken, rotateRefreshToken, clearRefreshToken } from '../services/tokenService.ts';
 
 // temp
 import bcrypt from 'bcrypt';
-
-// signing the token
-import jwt from 'jsonwebtoken';
+import type { Types } from 'mongoose';
 
 // errors
 const e_notFound = { status: StatusCodes.NOT_FOUND }
@@ -28,40 +31,27 @@ export const register: RequestHandler = async (req, res, next) => {
         if (found) { throw new Error('User already exists', { cause: e_alreadyExists }); }
 
         // hashing session
-        const hash = await bcrypt.hash(password, 10);
+        const hash: string = await bcrypt.hash(password, 10);
         // 10 is the salt rounds, which determines the computational cost of hashing. 
         // Higher is more secure but slower.
 
-        res.json({ hash }); // for testing, remove later
-
         // if does not exist, create a new user
-        const newUser = await User.create({ email, hash });
+        const newUser = await User.create({ email: email, password: hash });
 
         // include any user info you want in the token payload
         const payload = { email: newUser.email, id: newUser._id };
         // In production, use a secure secret and store it in environment variables
 
-        const secret: string = process.env.JWT_SECRET || 'undefined_secret';
+        const accessToken = await signAccessToken(payload);
+        const refreshToken = await rotateRefreshToken(newUser._id);
 
-        const token = jwt.sign(payload, secret, { expiresIn: '1h' }); // token expires in 1 hour
+        setAuthCookies(res, accessToken, refreshToken);
 
-        res.json({ token }); // for testing, remove later
-
-        // respond with success message
-        // res.status(StatusCodes.CREATED).json({ message: 'User registered successfully' });
-
-        // return res.json({ hash });
-
-        // Set the access token as an HTTP-only cookie
-        // An access token is a credential that proves the user is authenticated.
-        // It's sent with each subsequent request to authorize protected endpoints.
-        // Storing it in a cookie (rather than localStorage) protects against XSS attacks
-        // because JavaScript cannot access httpOnly cookies.
-        res.cookie("accessToken", token, {
-            httpOnly: true, // prevents JavaScript access to the cookie, mitigating XSS attacks
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict', // prevents the browser from sending this cookie along with cross-site requests
-            maxAge: '1h', // cookie expires in 1 hour
+        // Send ONE response with success
+        res.status(StatusCodes.CREATED).json({
+            message: 'User registered successfully',
+            accessToken,
+            user: { id: newUser._id, email: newUser.email }
         });
 
     } catch (error) {
@@ -73,56 +63,86 @@ export const register: RequestHandler = async (req, res, next) => {
 
 export const login: RequestHandler = async (req, res, next) => {
     try {
-        
+
         const { email, password } = req.body;
 
-        const user = await User.findOne({ email }).select('+password'); 
-        // explicitly include password hash in the query result
+        const user = await User
+            .findOne({ email })
+            .select('+password'); // explicitly include password hash in the query result
 
-        res.json({ user }); // for testing, remove later
-        
         if (!user) {
             throw new Error('User not found', { cause: e_notFound });
         }
 
-        // compare the provided password with the stored hash
+        // compare the provided pass with the stored hash
         const match = await bcrypt.compare(password, user.password);
 
         if (!match) {
             throw new Error('Invalid credentials', { cause: e_unauthorized });
         }
 
-        const payload = { email: user.email, id: user._id };
-        const secret: string = process.env.JWT_SECRET || 'undefined_secret';
+        const payload = {
+            email: user.email,
+            id: user._id
+        };
 
-        const token = jwt.sign(payload, secret, { expiresIn: '1h' });
+        const accessToken = await signAccessToken(payload);
+        const refreshToken = await rotateRefreshToken(user._id);
 
-        res.json({ token }); // for testing, remove later
+        setAuthCookies(res, accessToken, refreshToken);
 
-        // Set the access token as an HTTP-only cookie
-        res.cookie("accessToken", token, {
-            httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
-            // maxAge: 3600000, // 1 hour in milliseconds
+        // Send ONE response with success
+        res.status(200).json({
+            message: 'User logged in successfully',
+            accessToken,
+            user: { id: user._id, email: user.email }
         });
 
-        res.json({ message: 'User logged in successfully' });
-
         // what do we do with them cookie?
-        // send it to the middleware that checks for it and verifies it on protected routes
+        // send it to the middleware that verifies it on protected routes
+
+        /// ...
 
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     } finally {
         console.log("RequestHandler: login completed");
     }
-}
+} 
+
+const e_refreshTokenError = new Error('Refresh token missing', { cause: e_unauthorized });
+const e_storedTokenError = new Error('Invalid refresh token', { cause: e_unauthorized });
 
 export const refresh: RequestHandler = async (req, res, next) => {
-    // token refresh logic here
     try {
-        res.json({ message: 'Token refreshed successfully' });
+
+        const { refreshToken } = req.cookies;
+        if (!refreshToken) { throw e_refreshTokenError };
+
+        const storedToken = await RefreshToken
+            .findOne({ token: refreshToken })
+            .populate('userId'); // gets user
+
+        if (!storedToken) { throw e_storedTokenError };
+
+        const user = await User.findById(storedToken.userId);
+        if (!user) { throw e_notFound }
+
+        await storedToken.deleteOne();
+        // === await RefreshToken.findByIdAndDelete(storedToken._id);
+
+        
+        const payload = { email: user.email, id: user._id };
+        const accessToken = await signAccessToken(payload);
+
+        const userId = storedToken.userId as Types.ObjectId;
+        const newRefershToken = await rotateRefreshToken(userId);
+
+        // In production, use a secure secret and store it in environment variables
+
+        setAuthCookies(res, accessToken, newRefershToken);
+        res.status(201).json(storedToken);
+
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     } finally {
@@ -131,12 +151,25 @@ export const refresh: RequestHandler = async (req, res, next) => {
 }
 
 export const logout: RequestHandler = async (req, res, next) => {
-    // logout logic here
     try {
-        res.json({ message: 'User logged out successfully' });
+        await clearRefreshToken(req.cookies.refreshToken);
+        await clearAuthCookies(res);
+        res.end();
+    } catch (error) {
+        next(error);
+    } finally {
+        console.log("Logged out!");
+    }
+};
+
+export const profile: RequestHandler = async (req, res, next) => {
+    try {
+        const user = await User.findById(req.user?.id);
+        res.json(user);
+
     } catch (error) {
         next(error); // Pass the error to the error handling middleware
     } finally {
-        console.log("RequestHandler: logout completed");
+        console.log("RequestHandler: profile finished");
     }
 }
